@@ -5,8 +5,7 @@ import os
 
 app = Flask(__name__)
 
-# Make sure your actual Neon URL is pasted here!
-# This grabs the URL from Render when deployed, or uses a default string locally (DON'T put your real password in the default!)
+# The URL to the database is sensitive, so we get it from an environment variable we set in the server host
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/fallback")
 
 @app.route('/', methods=['GET'])
@@ -15,7 +14,7 @@ def health_check():
     return "🟢 KitchenMate Server is Awake and Running!", 200
 
 def get_db_connection():
-    # Connects to the Neon.tech cloud database
+    # Returns a connection to the cloud database
     conn = psycopg2.connect(DATABASE_URL)
     return conn
 
@@ -46,19 +45,19 @@ def register():
     role = data.get('role')
     password = data.get('password') 
     
-    # Generate a mock session token to send back to Android
+    # Generate a session token to send back to Android
     session_token = f"kitchenmate_token_{uuid.uuid4().hex}"
 
-    # Open the database connection using our helper function (NO MORE SQLITE!)
+    # Open the database connection using our helper function
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # Save to Neon.tech using Postgres %s syntax
+        # Save the sent values to the cloud database
         cur.execute("INSERT INTO users (name, email, role, password) VALUES (%s, %s, %s, %s)", (name, email, role, password))
         conn.commit()
-        print(f"Success: Saved {name} to the cloud database!")
+        print(f"Success: Saved {name} to the cloud database")
     except Exception as e:
-        # If the email already exists, it will trigger this error
+        # Since the email should be unique, this will catch attempts to register with an email that's already in use
         return jsonify({"message": "Error saving user", "error": str(e)}), 400
     finally:
         cur.close()
@@ -68,6 +67,40 @@ def register():
         "token": session_token,
         "message": "User registered and saved successfully!"
     }), 200
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+
+    # Open the database connection
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    try:
+        # Search for the user by email
+        cur.execute("SELECT id, name, role, password FROM users WHERE email = %s", (email,))
+        user = cur.fetchone() # Fetches the first matching row, or none if it doesn't exist
+
+        # Check if the user exists and the password matches
+        # user[3] is the password column from our SELECT statement above
+        if user and user[3] == password:
+            # Success! Generate a session token
+            session_token = f"kitchenmate_token_{uuid.uuid4().hex}"
+            return jsonify({
+                "token": session_token, 
+                "message": f"Welcome back, {user[1]}!" # user[1] is their name
+            }), 200
+        else:
+            # Fail: wrong email or password
+            return jsonify({"message": "Invalid email or password"}), 401
+            
+    except Exception as e:
+        return jsonify({"message": "Server error", "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', debug=True, port=5000)
