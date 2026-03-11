@@ -9,6 +9,11 @@ app = Flask(__name__)
 # This grabs the URL from Render when deployed, or uses a default string locally (DON'T put your real password in the default!)
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/fallback")
 
+@app.route('/', methods=['GET'])
+def health_check():
+    # this should show when opening the link in the browser so we can see if the server is running correcrtly
+    return "🟢 KitchenMate Server is Awake and Running!", 200
+
 def get_db_connection():
     # Connects to the Neon.tech cloud database
     conn = psycopg2.connect(DATABASE_URL)
