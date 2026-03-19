@@ -53,7 +53,10 @@ def register():
     cur = conn.cursor()
     try:
         # Save the sent values to the cloud database
-        cur.execute("INSERT INTO users (name, email, role, password) VALUES (%s, %s, %s, %s)", (name, email, role, password))
+        cur.execute(
+            "INSERT INTO users (name, email, role, password, session_token) VALUES (%s, %s, %s, %s, %s)", 
+            (name, email, role, password, session_token)
+        )
         conn.commit()
         print(f"Success: Saved {name} to the cloud database")
     except Exception as e:
@@ -87,12 +90,16 @@ def login():
         # Check if the user exists and the password matches
         # user[3] is the password column from our SELECT statement above
         if user and user[3] == password:
-            # Success! Generate a session token
             session_token = f"kitchenmate_token_{uuid.uuid4().hex}"
+            
+            # Update the user's row with their current session token
+            cur.execute("UPDATE users SET session_token = %s WHERE id = %s", (session_token, user[0]))
+            conn.commit()
+            
             return jsonify({
                 "token": session_token, 
-                "role": user[2], # user[2] is the role column from our SELECT statement above
-                "message": f"Welcome back, {user[1]}!" # user[1] is their name
+                "role": user[2],
+                "message": f"Welcome back, {user[1]}!" 
             }), 200
         else:
             # Fail: wrong email or password
@@ -100,6 +107,90 @@ def login():
             
     except Exception as e:
         return jsonify({"message": "Server error", "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+# From here we're mainly dealing with inventory management instead of authentication
+
+# Helper function to extract the user_id from the request's Authorization header, which contains the session token
+def get_user_id_from_request():
+    # Android will send the token in the headers as "Bearer kitchenmate_token_123..."
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return None
+    
+    token = auth_header.split(' ')[1] # Extracts just the token part
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE session_token = %s", (token,))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+    
+    return user[0] if user else None # Returns the user_id, or None if the token is expired or shouldn't exist exist
+
+# Route to send new inventory items fron the app to the database
+@app.route('/api/inventory/add', methods=['POST'])
+def add_inventory_item():
+    user_id = get_user_id_from_request()
+    if not user_id:
+        return jsonify({"message": "Unauthorized. Please log in again."}), 401
+
+    data = request.get_json()
+    item_name = data.get('item_name')
+    quantity = data.get('quantity', 1) # Default to 1 if they don't specify
+    expiry_date = data.get('expiry_date', '') # Might be blank, which is fine
+
+    if not item_name:
+        return jsonify({"message": "Item name is required"}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO inventory (user_id, item_name, quantity, expiry_date) VALUES (%s, %s, %s, %s)",
+            (user_id, item_name, quantity, expiry_date)
+        )
+        conn.commit()
+        return jsonify({"message": f"Added {quantity}x {item_name} to your inventory!"}), 201
+    except Exception as e:
+        return jsonify({"message": "Database error", "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+# Route to fetch all inventory items belonging to the requesting user
+@app.route('/api/inventory', methods=['GET'])
+def get_inventory():
+    user_id = get_user_id_from_request()
+    if not user_id:
+        return jsonify({"message": "Unauthorized"}), 401
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Fetch all items belonging to this specific user
+        cur.execute(
+            "SELECT id, item_name, quantity, expiry_date FROM inventory WHERE user_id = %s ORDER BY created_at DESC", 
+            (user_id,)
+        )
+        rows = cur.fetchall()
+        
+        # Package the SQL rows into a clean list of dictionaries for Android
+        inventory_list = []
+        for row in rows:
+            inventory_list.append({
+                "id": row[0],
+                "item_name": row[1],
+                "quantity": row[2],
+                "expiry_date": row[3]
+            })
+            
+        return jsonify(inventory_list), 200
+    except Exception as e:
+        return jsonify({"message": "Database error", "error": str(e)}), 500
     finally:
         cur.close()
         conn.close()
