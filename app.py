@@ -153,7 +153,7 @@ def add_inventory_item():
     cur = conn.cursor()
     try:
         cur.execute(
-            "INSERT INTO inventory (user_id, emoji, name, quantity, expires) VALUES (%s, %s, %s, %s, %s)",
+            "INSERT INTO inventories (user_id, emoji, name, quantity, expires) VALUES (%s, %s, %s, %s, %s)",
             (user_id, emoji, name, quantity, expires)
         )
         conn.commit()
@@ -176,7 +176,7 @@ def get_inventory():
     try:
         # Fetch all inventory items for the user, ordered by creation time (newest first)
         cur.execute(
-            "SELECT id, emoji, name, quantity, expires FROM inventory WHERE user_id = %s ORDER BY created_at DESC", 
+            "SELECT id, emoji, name, quantity, expires FROM inventories WHERE user_id = %s ORDER BY created_at DESC", 
             (user_id,)
         )
         rows = cur.fetchall()
