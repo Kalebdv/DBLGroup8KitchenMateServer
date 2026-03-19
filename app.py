@@ -65,6 +65,7 @@ def register():
 
     return jsonify({
         "token": session_token,
+        "role": role,
         "message": "User registered and saved successfully!"
     }), 200
 
@@ -90,6 +91,7 @@ def login():
             session_token = f"kitchenmate_token_{uuid.uuid4().hex}"
             return jsonify({
                 "token": session_token, 
+                "role": user[2], # user[2] is the role column from our SELECT statement above
                 "message": f"Welcome back, {user[1]}!" # user[1] is their name
             }), 200
         else:
