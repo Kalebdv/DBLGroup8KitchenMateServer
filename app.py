@@ -199,5 +199,28 @@ def get_inventory():
         cur.close()
         conn.close()
 
+@app.route('/api/inventory/delete/<int:item_id>', methods=['DELETE'])
+def delete_inventory_item(item_id):
+    user_id = get_user_id_from_request()
+    if not user_id:
+        return jsonify({"message": "Unauthorized"}), 401
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Delete the item ONLY if it belongs to this user
+        cur.execute("DELETE FROM inventories WHERE id = %s AND user_id = %s", (item_id, user_id))
+        conn.commit()
+        
+        if cur.rowcount == 0:
+            return jsonify({"message": "Item not found"}), 404
+            
+        return jsonify({"message": "Item deleted"}), 200
+    except Exception as e:
+        return jsonify({"message": "Database error", "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', debug=True, port=5000)
