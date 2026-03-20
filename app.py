@@ -189,8 +189,9 @@ def get_inventory():
                 "id": row[0],
                 "emoji": row[1],
                 "name": row[2],
-                "quantity": row[3],
-                "expires": row[4]
+                "amount": row[3],
+                "unit": row[4],
+                "expires": row[5]
             })
             
         return jsonify(inventory_list), 200
@@ -217,6 +218,62 @@ def delete_inventory_item(item_id):
             return jsonify({"message": "Item not found"}), 404
             
         return jsonify({"message": "Item deleted"}), 200
+    except Exception as e:
+        return jsonify({"message": "Database error", "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+# This route is pretty much a more elaborate version of the delete route with some extra logic for nice features we wanted 
+# specifically to remove only a certain amount of an item from the inventory instead of the whole item
+@app.route('/api/inventory/consume/<int:item_id>', methods=['POST'])
+def consume_inventory_item(item_id):
+    user_id = get_user_id_from_request()
+    if not user_id:
+        # If the token is invalid or expired, we won't know which user is making the request, so we return an unauthorized error
+        return jsonify({"message": "Unauthorized"}), 401
+
+    data = request.get_json()
+    amount_to_remove = float(data.get('amount_to_consume', 0.0))
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Look up the current item
+        cur.execute("SELECT amount, unit FROM inventories WHERE id = %s AND user_id = %s", (item_id, user_id))
+        item = cur.fetchone()
+
+        if not item:
+            return jsonify({"message": "Item not found"}), 404
+
+        current_amount = float(item[0])
+        current_unit = item[1]
+
+        # Do the math to figure out how much is left after consuming the specified amount
+        new_amount = current_amount - amount_to_remove
+
+        # Decide whether to fully delete the item (if it's all consumed) or update it with the new remaining amount
+        if new_amount < 0.001: # 0.001 to avoid issues with floating point errors without interfering with unit conversion that happens below
+            # All consumed so we delete the row from the database
+            cur.execute("DELETE FROM inventories WHERE id = %s", (item_id,))
+            conn.commit()
+            return jsonify({"message": "Item fully consumed", "action": "deleted"}), 200
+        else:
+            new_unit = current_unit
+            
+            # For kg unit we want to update it to grams if it becomes less than 1. Same goes for Liters
+            if current_unit == 'kg' and new_amount < 1.0:
+                new_amount = new_amount * 1000
+                new_unit = 'g'
+            elif current_unit == 'L' and new_amount < 1.0:
+                new_amount = new_amount * 1000
+                new_unit = 'ml'
+
+            # Update the row with the remaining food
+            cur.execute("UPDATE inventories SET amount = %s, unit = %s WHERE id = %s", (new_amount, new_unit, item_id))
+            conn.commit()
+            return jsonify({"message": "Inventory updated", "action": "updated"}), 200
+
     except Exception as e:
         return jsonify({"message": "Database error", "error": str(e)}), 500
     finally:
