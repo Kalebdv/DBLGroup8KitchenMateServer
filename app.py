@@ -143,7 +143,8 @@ def add_inventory_item():
     # Extract data sent from the android app and add default values to some fields
     emoji = data.get('emoji', '📦') # Default to a box emoji if not provided
     name = data.get('name')
-    quantity = data.get('quantity', '1') # Default to a quantity of 1 if not provided
+    amount = data.get('amount', '1') # Default to an amount of 1 if not provided
+    unit = data.get('unit', 'pcs') # Default to "pcs" (pieces) if no unit is provided
     expires = data.get('expires', '') 
 
     if not name:
@@ -153,8 +154,8 @@ def add_inventory_item():
     cur = conn.cursor()
     try:
         cur.execute(
-            "INSERT INTO inventories (user_id, emoji, name, quantity, expires) VALUES (%s, %s, %s, %s, %s)",
-            (user_id, emoji, name, quantity, expires)
+            "INSERT INTO inventories (user_id, emoji, name, amount, unit, expires) VALUES (%s, %s, %s, %s, %s, %s)",
+            (user_id, emoji, name, amount, unit, expires)
         )
         conn.commit()
         return jsonify({"message": f"Added {name} to your inventory!"}), 201
@@ -176,7 +177,7 @@ def get_inventory():
     try:
         # Fetch all inventory items for the user, ordered by creation time (newest first)
         cur.execute(
-            "SELECT id, emoji, name, quantity, expires FROM inventories WHERE user_id = %s ORDER BY created_at DESC", 
+            "SELECT id, emoji, name, amount, unit, expires FROM inventories WHERE user_id = %s ORDER BY created_at DESC", 
             (user_id,)
         )
         rows = cur.fetchall()
