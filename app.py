@@ -135,30 +135,53 @@ def get_user_id_from_request():
 @app.route('/api/inventory/add', methods=['POST'])
 def add_inventory_item():
     user_id = get_user_id_from_request()
-    if not user_id:
-        return jsonify({"message": "Unauthorized. Please log in again."}), 401
+    if not user_id: return jsonify({"message": "Unauthorized"}), 401
 
     data = request.get_json()
-    
-    # Extract data sent from the android app and add default values to some fields
-    emoji = data.get('emoji', '📦') # Default to a box emoji if not provided
+    emoji = data.get('emoji', '📦')
     name = data.get('name')
-    amount = data.get('amount', '1') # Default to an amount of 1 if not provided
-    unit = data.get('unit', 'pcs') # Default to "pcs" (pieces) if no unit is provided
-    expires = data.get('expires', '') 
+    amount = float(data.get('amount', 1.0))
+    unit = data.get('unit', 'pcs')
+    expires = data.get('expires', '')
+    
+    # A flag from Android telling us to overwrite the unit anyway
+    force_update = data.get('force_update', False) 
 
-    if not name:
-        return jsonify({"message": "Item name is required"}), 400
+    if not name: return jsonify({"message": "Item name is required"}), 400
 
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        cur.execute(
-            "INSERT INTO inventories (user_id, emoji, name, amount, unit, expires) VALUES (%s, %s, %s, %s, %s, %s)",
-            (user_id, emoji, name, amount, unit, expires)
-        )
-        conn.commit()
-        return jsonify({"message": f"Added {name} to your inventory!"}), 201
+        # Search for an existing item with the exact same name for this user
+        cur.execute("SELECT id, amount, unit FROM inventories WHERE LOWER(name) = LOWER(%s) AND user_id = %s", (name, user_id))
+        existing_item = cur.fetchone()
+
+        if existing_item:
+            item_id, existing_amount, existing_unit = existing_item
+            
+            # If units don't match and the user hasn't explicitly forced it, throw a warning instead of combining
+            if existing_unit != unit and not force_update:
+                return jsonify({"error": "UNIT_MISMATCH", "message": f"Unit mismatch for {name}."}), 409
+            
+            # Add the new amount to the old amount
+            new_amount = float(existing_amount) + amount
+            
+            # Overwrite the row with the combined amount, the (potentially new) unit, and the newest expiry date
+            cur.execute(
+                "UPDATE inventories SET amount = %s, unit = %s, expires = %s, emoji = %s WHERE id = %s",
+                (new_amount, unit, expires, emoji, item_id)
+            )
+            conn.commit()
+            return jsonify({"message": f"Combined! You now have {new_amount} {unit} of {name}."}), 200
+        else:
+            # It's a brand new item, so we just insert it normally
+            cur.execute(
+                "INSERT INTO inventories (user_id, emoji, name, amount, unit, expires) VALUES (%s, %s, %s, %s, %s, %s)",
+                (user_id, emoji, name, amount, unit, expires)
+            )
+            conn.commit()
+            return jsonify({"message": f"Added {name} to your inventory!"}), 201
+
     except Exception as e:
         return jsonify({"message": "Database error", "error": str(e)}), 500
     finally:
