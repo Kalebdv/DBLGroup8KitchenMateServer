@@ -304,4 +304,6 @@ def consume_inventory_item(item_id):
         conn.close()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', debug=True, port=5000)
+    # Grab the port the server host provides
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host='0.0.0.0', debug=False, port=port)
