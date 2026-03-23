@@ -11,7 +11,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/fallback")
 @app.route('/', methods=['GET'])
 def health_check():
     # this should show when opening the link in the browser so we can see if the server is running correcrtly
-    return "🟢 KitchenMate Server is Awake and Running!", 200
+    return "KitchenMate Server is Awake and Running", 200
 
 def get_db_connection():
     # Returns a connection to the cloud database
@@ -69,7 +69,7 @@ def register():
     return jsonify({
         "token": session_token,
         "role": role,
-        "message": "User registered and saved successfully!"
+        "message": "User registered and saved successfully"
     }), 200
 
 @app.route('/api/login', methods=['POST'])
@@ -153,7 +153,10 @@ def add_inventory_item():
     cur = conn.cursor()
     try:
         # Search for an existing item with the exact same name for this user
-        cur.execute("SELECT id, amount, unit FROM inventories WHERE LOWER(name) = LOWER(%s) AND user_id = %s", (name, user_id))
+        cur.execute(
+            "SELECT id, amount, unit FROM inventories WHERE LOWER(name) = LOWER(%s) AND user_id = %s AND expires = %s", 
+            (name, user_id, expires)
+        )
         existing_item = cur.fetchone()
 
         if existing_item:
@@ -297,6 +300,35 @@ def consume_inventory_item(item_id):
             conn.commit()
             return jsonify({"message": "Inventory updated", "action": "updated"}), 200
 
+    except Exception as e:
+        return jsonify({"message": "Database error", "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+# This route allows the app to update just the expiration date of an item so the user can easily change this
+@app.route('/api/inventory/update_expiry/<int:item_id>', methods=['PATCH'])
+def update_expiry(item_id):
+    user_id = get_user_id_from_request()
+    if not user_id: return jsonify({"message": "Unauthorized"}), 401
+
+    data = request.get_json()
+    new_expires = data.get('expires', '')
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Update just the expiration date for this specific item
+        cur.execute(
+            "UPDATE inventories SET expires = %s WHERE id = %s AND user_id = %s",
+            (new_expires, item_id, user_id)
+        )
+        conn.commit()
+        
+        if cur.rowcount == 0:
+            return jsonify({"message": "Item not found"}), 404
+            
+        return jsonify({"message": "Expiration date updated", "new_date": new_expires}), 200
     except Exception as e:
         return jsonify({"message": "Database error", "error": str(e)}), 500
     finally:
