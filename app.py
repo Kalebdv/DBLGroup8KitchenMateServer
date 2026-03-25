@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import psycopg2
 import uuid
 import os
+import json
 
 app = Flask(__name__)
 
@@ -72,41 +73,33 @@ def register():
         "message": "User registered and saved successfully"
     }), 200
 
-@app.route('/api/login', methods=['POST'])
-def login():
-    data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
-
-    # Open the database connection
+@app.route('/api/recipes', methods=['GET'])
+def get_recipes():
     conn = get_db_connection()
     cur = conn.cursor()
-    
-    try:
-        # Search for the user by email
-        cur.execute("SELECT id, name, role, password FROM users WHERE email = %s", (email,))
-        user = cur.fetchone() # Fetches the first matching row, or none if it doesn't exist
 
-        # Check if the user exists and the password matches
-        # user[3] is the password column from our SELECT statement above
-        if user and user[3] == password:
-            session_token = f"kitchenmate_token_{uuid.uuid4().hex}"
-            
-            # Update the user's row with their current session token
-            cur.execute("UPDATE users SET session_token = %s WHERE id = %s", (session_token, user[0]))
-            conn.commit()
-            
-            return jsonify({
-                "token": session_token, 
-                "role": user[2],
-                "message": f"Welcome back, {user[1]}!" 
-            }), 200
-        else:
-            # Fail: wrong email or password
-            return jsonify({"message": "Invalid email or password"}), 401
-            
+    try:
+        cur.execute("""
+            SELECT id, name, description, ingredients_json, instructions_json
+            FROM recipes
+            ORDER BY name ASC
+        """)
+        rows = cur.fetchall()
+
+        recipes = []
+        for row in rows:
+            recipes.append({
+                "id": row[0],
+                "name": row[1],
+                "description": row[2],
+                "requiredIngredients": json.loads(row[3]),
+                "instructions": json.loads(row[4])
+            })
+
+        return jsonify(recipes), 200
+
     except Exception as e:
-        return jsonify({"message": "Server error", "error": str(e)}), 500
+        return jsonify({"message": "Database error", "error": str(e)}), 500
     finally:
         cur.close()
         conn.close()
