@@ -9,6 +9,51 @@ app = Flask(__name__)
 # The URL to the database is sensitive, so we get it from an environment variable we set in the server host
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/fallback")
 
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT role, session_token FROM users WHERE email = %s AND password = %s",
+            (email, password)
+        )
+        user = cur.fetchone()
+
+        if not user:
+            return jsonify({"message": "Invalid email or password"}), 401
+
+        return jsonify({
+            "token": user[1],
+            "role": user[0],
+            "message": "Login successful"
+        }), 200
+
+    except Exception as e:
+        return jsonify({"message": "Database error", "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @app.route('/', methods=['GET'])
 def health_check():
     # this should show when opening the link in the browser so we can see if the server is running correcrtly
@@ -28,9 +73,13 @@ def init_db():
             name TEXT NOT NULL,
             email TEXT UNIQUE NOT NULL,
             role TEXT NOT NULL,
-            password TEXT NOT NULL
+            password TEXT NOT NULL,
+            session_token TEXT
         )
     ''')
+    conn.commit()
+    cur.close()
+    conn.close()
     conn.commit()
     cur.close()
     conn.close()
