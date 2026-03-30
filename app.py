@@ -39,21 +39,6 @@ def login():
         cur.close()
         conn.close()
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @app.route('/', methods=['GET'])
 def health_check():
     # this should show when opening the link in the browser so we can see if the server is running correcrtly
@@ -360,18 +345,43 @@ def update_expiry(item_id):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # Update just the expiration date for this specific item
-        cur.execute(
-            "UPDATE inventories SET expires = %s WHERE id = %s AND user_id = %s",
-            (new_expires, item_id, user_id)
-        )
-        conn.commit()
-        
-        if cur.rowcount == 0:
+        # Grab the current item's details so we know what to look for
+        cur.execute("SELECT name, amount, unit FROM inventories WHERE id = %s AND user_id = %s", (item_id, user_id))
+        target_item = cur.fetchone()
+
+        if not target_item:
             return jsonify({"message": "Item not found"}), 404
-            
-        return jsonify({"message": "Expiration date updated", "new_date": new_expires}), 200
+
+        name, amount, unit = target_item[0], target_item[1], target_item[2]
+
+        # Check if an identical item already exists with this new expiration date
+        cur.execute(
+            "SELECT id, amount FROM inventories WHERE LOWER(name) = LOWER(%s) AND unit = %s AND expires = %s AND user_id = %s AND id != %s",
+            (name, unit, new_expires, user_id, item_id)
+        )
+        matching_item = cur.fetchone()
+
+        if matching_item:
+            # Add the amounts together and delete the old row
+            match_id, match_amount = matching_item[0], matching_item[1]
+            new_amount = float(amount) + float(match_amount)
+
+            cur.execute("UPDATE inventories SET amount = %s WHERE id = %s", (new_amount, match_id))
+            cur.execute("DELETE FROM inventories WHERE id = %s", (item_id,))
+            message = "Items merged successfully!"
+        else:
+            # If no match is found, just safely change the date
+            cur.execute(
+                "UPDATE inventories SET expires = %s WHERE id = %s AND user_id = %s",
+                (new_expires, item_id, user_id)
+            )
+            message = "Expiration date updated!"
+
+        conn.commit()
+        return jsonify({"message": message}), 200
+
     except Exception as e:
+        conn.rollback()
         return jsonify({"message": "Database error", "error": str(e)}), 500
     finally:
         cur.close()
