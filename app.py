@@ -311,7 +311,7 @@ def create_recipe():
         conn.close()
 
 
-@app.route("/api/recipes/<int:recipe_id>", methods=["PATCH"])
+@app.route("/api/recipes/<int:recipe_id>", methods=["PATCH", "PUT"])
 def update_recipe(recipe_id):
     user_id = get_user_id_from_request()
     if not user_id:
