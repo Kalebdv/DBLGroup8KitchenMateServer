@@ -469,23 +469,47 @@ def update_expiry(item_id):
     cur = conn.cursor()
     try:
         cur.execute(
-            "UPDATE inventories SET expires = %s WHERE id = %s AND user_id = %s",
-            (new_expires, item_id, user_id)
+            "SELECT name, amount, unit FROM inventories WHERE id = %s AND user_id = %s",
+            (item_id, user_id)
         )
-        conn.commit()
+        target_item = cur.fetchone()
 
-        if cur.rowcount == 0:
+        if not target_item:
             return jsonify({"message": "Item not found"}), 404
 
-        return jsonify({"message": "Expiration date updated", "new_date": new_expires}), 200
+        name, amount, unit = target_item[0], target_item[1], target_item[2]
+
+        cur.execute(
+            "SELECT id, amount FROM inventories WHERE LOWER(name) = LOWER(%s) AND unit = %s AND expires = %s AND user_id = %s AND id != %s",
+            (name, unit, new_expires, user_id, item_id)
+        )
+        matching_item = cur.fetchone()
+
+        if matching_item:
+            match_id, match_amount = matching_item[0], matching_item[1]
+            new_amount = float(amount) + float(match_amount)
+
+            cur.execute("UPDATE inventories SET amount = %s WHERE id = %s", (new_amount, match_id))
+            cur.execute("DELETE FROM inventories WHERE id = %s", (item_id,))
+            message = "Items merged successfully!"
+        else:
+            cur.execute(
+                "UPDATE inventories SET expires = %s WHERE id = %s AND user_id = %s",
+                (new_expires, item_id, user_id)
+            )
+            message = "Expiration date updated!"
+
+        conn.commit()
+        return jsonify({"message": message}), 200
+
     except Exception as e:
+        conn.rollback()
         return jsonify({"message": "Database error", "error": str(e)}), 500
     finally:
         cur.close()
         conn.close()
 
 
-# Run once on startup
 init_db()
 
 if __name__ == "__main__":
