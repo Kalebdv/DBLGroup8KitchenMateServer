@@ -38,6 +38,26 @@ def init_db():
             )
         """)
 
+        cur.execute("ALTER TABLE recipes ADD COLUMN IF NOT EXISTS created_by_user_id INT")
+        cur.execute("ALTER TABLE recipes ADD COLUMN IF NOT EXISTS is_published BOOLEAN DEFAULT FALSE")
+        cur.execute("ALTER TABLE recipes ADD COLUMN IF NOT EXISTS top_image_uri TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE recipes ADD COLUMN IF NOT EXISTS detail_image_uri TEXT DEFAULT ''")
+        cur.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'recipes_created_by_user_id_fkey'
+                ) THEN
+                    ALTER TABLE recipes
+                    ADD CONSTRAINT recipes_created_by_user_id_fkey
+                    FOREIGN KEY (created_by_user_id) REFERENCES users(id)
+                    ON DELETE SET NULL NOT VALID;
+                END IF;
+            END $$;
+        """)
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS inventories (
                 id SERIAL PRIMARY KEY,
@@ -84,6 +104,32 @@ def get_user_id_from_request():
     finally:
         cur.close()
         conn.close()
+
+
+def recipe_row_to_json(row):
+    try:
+        ingredients = json.loads(row[3]) if row[3] else []
+    except Exception:
+        ingredients = []
+
+    try:
+        instructions = json.loads(row[4]) if row[4] else []
+    except Exception:
+        instructions = []
+
+    recipe = {
+        "id": row[0],
+        "name": row[1],
+        "description": row[2],
+        "requiredIngredients": ingredients,
+        "instructions": instructions,
+        "topImageUri": row[6] or "",
+        "detailImageUri": row[7] or "",
+        "isPublished": bool(row[5]) if row[5] is not None else False
+    }
+    if len(row) > 8 and row[8]:
+        recipe["createdBy"] = row[8]
+    return recipe
 
 
 @app.route("/", methods=["GET"])
@@ -166,34 +212,195 @@ def get_recipes():
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT id, name, description, ingredients_json, instructions_json
-            FROM recipes
+            SELECT r.id, r.name, r.description, r.ingredients_json, r.instructions_json,
+                   COALESCE(r.is_published, FALSE), COALESCE(r.top_image_uri, ''), COALESCE(r.detail_image_uri, ''), u.email
+            FROM recipes r
+            LEFT JOIN users u ON u.id = r.created_by_user_id
+            WHERE COALESCE(r.is_published, FALSE) = TRUE
             ORDER BY name ASC
         """)
         rows = cur.fetchall()
 
-        recipes = []
-        for row in rows:
-            try:
-                ingredients = json.loads(row[3]) if row[3] else []
-            except Exception:
-                ingredients = []
-
-            try:
-                instructions = json.loads(row[4]) if row[4] else []
-            except Exception:
-                instructions = []
-
-            recipes.append({
-                "id": row[0],
-                "name": row[1],
-                "description": row[2],
-                "requiredIngredients": ingredients,
-                "instructions": instructions
-            })
-
+        recipes = [recipe_row_to_json(row) for row in rows]
         return jsonify(recipes), 200
 
+    except Exception as e:
+        return jsonify({"message": "Database error", "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route("/api/recipes/mine", methods=["GET"])
+def get_my_recipes():
+    user_id = get_user_id_from_request()
+    if not user_id:
+        return jsonify({"message": "Unauthorized"}), 401
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT r.id, r.name, r.description, r.ingredients_json, r.instructions_json,
+                   COALESCE(r.is_published, FALSE), COALESCE(r.top_image_uri, ''), COALESCE(r.detail_image_uri, ''), u.email
+            FROM recipes r
+            LEFT JOIN users u ON u.id = r.created_by_user_id
+            WHERE r.created_by_user_id = %s
+            ORDER BY r.id DESC
+        """, (user_id,))
+        rows = cur.fetchall()
+        return jsonify([recipe_row_to_json(row) for row in rows]), 200
+    except Exception as e:
+        return jsonify({"message": "Database error", "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route("/api/recipes", methods=["POST"])
+def create_recipe():
+    user_id = get_user_id_from_request()
+    if not user_id:
+        return jsonify({"message": "Unauthorized"}), 401
+
+    data = request.get_json() or {}
+    name = data.get("name", "").strip()
+    description = data.get("description", "").strip()
+    required_ingredients = data.get("requiredIngredients", [])
+    instructions = data.get("instructions", [])
+    top_image_uri = data.get("topImageUri", "")
+    detail_image_uri = data.get("detailImageUri", "")
+    is_published = bool(data.get("isPublished", False))
+
+    if not name or not description:
+        return jsonify({"message": "Name and description are required"}), 400
+
+    if not isinstance(required_ingredients, list):
+        required_ingredients = []
+    if not isinstance(instructions, list):
+        instructions = []
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO recipes (
+                name, description, ingredients_json, instructions_json,
+                created_by_user_id, is_published, top_image_uri, detail_image_uri
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, name, description, ingredients_json, instructions_json,
+                      COALESCE(is_published, FALSE), COALESCE(top_image_uri, ''), COALESCE(detail_image_uri, '')
+        """, (
+            name,
+            description,
+            json.dumps(required_ingredients),
+            json.dumps(instructions),
+            user_id,
+            is_published,
+            top_image_uri,
+            detail_image_uri
+        ))
+        row = cur.fetchone()
+        conn.commit()
+        return jsonify(recipe_row_to_json(row)), 201
+    except Exception as e:
+        return jsonify({"message": "Database error", "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route("/api/recipes/<int:recipe_id>", methods=["PATCH"])
+def update_recipe(recipe_id):
+    user_id = get_user_id_from_request()
+    if not user_id:
+        return jsonify({"message": "Unauthorized"}), 401
+
+    data = request.get_json() or {}
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id FROM recipes
+            WHERE id = %s AND created_by_user_id = %s
+        """, (recipe_id, user_id))
+        if not cur.fetchone():
+            return jsonify({"message": "Recipe not found"}), 404
+
+        updates = []
+        values = []
+
+        if "name" in data:
+            updates.append("name = %s")
+            values.append((data.get("name") or "").strip())
+        if "description" in data:
+            updates.append("description = %s")
+            values.append((data.get("description") or "").strip())
+        if "requiredIngredients" in data:
+            ingredients = data.get("requiredIngredients")
+            if not isinstance(ingredients, list):
+                ingredients = []
+            updates.append("ingredients_json = %s")
+            values.append(json.dumps(ingredients))
+        if "instructions" in data:
+            instructions = data.get("instructions")
+            if not isinstance(instructions, list):
+                instructions = []
+            updates.append("instructions_json = %s")
+            values.append(json.dumps(instructions))
+        if "topImageUri" in data:
+            updates.append("top_image_uri = %s")
+            values.append(data.get("topImageUri") or "")
+        if "detailImageUri" in data:
+            updates.append("detail_image_uri = %s")
+            values.append(data.get("detailImageUri") or "")
+        if "isPublished" in data:
+            updates.append("is_published = %s")
+            values.append(bool(data.get("isPublished")))
+
+        if updates:
+            values.extend([recipe_id, user_id])
+            cur.execute(
+                f"UPDATE recipes SET {', '.join(updates)} WHERE id = %s AND created_by_user_id = %s",
+                tuple(values)
+            )
+
+        cur.execute("""
+            SELECT r.id, r.name, r.description, r.ingredients_json, r.instructions_json,
+                   COALESCE(r.is_published, FALSE), COALESCE(r.top_image_uri, ''), COALESCE(r.detail_image_uri, ''), u.email
+            FROM recipes r
+            LEFT JOIN users u ON u.id = r.created_by_user_id
+            WHERE r.id = %s AND r.created_by_user_id = %s
+        """, (recipe_id, user_id))
+        row = cur.fetchone()
+        conn.commit()
+        return jsonify(recipe_row_to_json(row)), 200
+    except Exception as e:
+        return jsonify({"message": "Database error", "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route("/api/recipes/<int:recipe_id>", methods=["DELETE"])
+def delete_recipe(recipe_id):
+    user_id = get_user_id_from_request()
+    if not user_id:
+        return jsonify({"message": "Unauthorized"}), 401
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "DELETE FROM recipes WHERE id = %s AND created_by_user_id = %s",
+            (recipe_id, user_id)
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return jsonify({"message": "Recipe not found"}), 404
+        return jsonify({"message": "Recipe deleted"}), 200
     except Exception as e:
         return jsonify({"message": "Database error", "error": str(e)}), 500
     finally:
